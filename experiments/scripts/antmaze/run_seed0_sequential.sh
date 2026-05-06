@@ -70,14 +70,20 @@ run_job () {
 # blows up on the real checkpoint), we want to know in 10 min, not 30.
 # WSRL is upstream / well-tested baseline; it almost never breaks.
 
-# Eval is expensive on antmaze-large because untrained policies get stuck
-# in the maze and run all 1000 steps per episode without reaching goal.
-# 5 trajs every 50k steps = 4 evals total per cell = ~5 min eval / cell.
+# Eval is expensive on antmaze-large (untrained policies often run all 1000
+# steps without reaching goal). Tradeoff between paper figure quality and
+# wall time:
+#   default       eval_interval=20000, n_eval_trajs=20  -> ~17min eval/cell
+#   too aggressive eval_interval=50000, n_eval_trajs=5  -> binary success
+#                                                          stats too noisy (CI ~ ±0.43 on 5 trajs)
+#   chosen        eval_interval=40000, n_eval_trajs=10 -> 5 evals/cell,
+#                                                         CI ~ ±0.31 on 10 trajs,
+#                                                         ~8 min eval/cell.
 EVAL_ARGS=(
-  --eval_interval 50000
-  --n_eval_trajs 5
+  --eval_interval 40000
+  --n_eval_trajs 10
   --save_interval 100000
-  --log_interval 10000
+  --log_interval 5000
 )
 
 # 1. Reduced-warmup BT-CCQ  (test: short warmup + gate)
