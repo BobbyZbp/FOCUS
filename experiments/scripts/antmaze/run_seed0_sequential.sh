@@ -65,16 +65,12 @@ run_job () {
   sleep 20
 }
 
-# 1. Reduced-warmup WSRL  (control: short warmup baseline)
-run_job "reduced_wsrl_seed${SEED}" \
-  bash experiments/scripts/antmaze/launch_wsrl_reduced_warmup.sh \
-    --env "${ENV_NAME}" \
-    --resume_path "${CKPT}" \
-    --seed "${SEED}" \
-    --save_dir "${SAVE_ROOT}/reduced_wsrl" \
-    --exp_name "reduced_wsrl_seed${SEED}"
+# Order rationale: BT-CCQ before WSRL — fail-fast on the new code.
+# BT-CCQ is the agent we wrote; if it has a bug (e.g. q_hat calibration
+# blows up on the real checkpoint), we want to know in 10 min, not 30.
+# WSRL is upstream / well-tested baseline; it almost never breaks.
 
-# 2. Reduced-warmup BT-CCQ  (test: short warmup + gate)
+# 1. Reduced-warmup BT-CCQ  (test: short warmup + gate)
 run_job "reduced_btccq_seed${SEED}" \
   bash experiments/scripts/antmaze/launch_btccq_reduced_warmup.sh \
     --env "${ENV_NAME}" \
@@ -83,16 +79,16 @@ run_job "reduced_btccq_seed${SEED}" \
     --save_dir "${SAVE_ROOT}/reduced_btccq" \
     --exp_name "reduced_btccq_seed${SEED}"
 
-# 3. Full-warmup WSRL  (control: standard WSRL baseline)
-run_job "full_wsrl_seed${SEED}" \
-  bash experiments/scripts/antmaze/launch_wsrl_full_warmup.sh \
+# 2. Reduced-warmup WSRL  (control: short warmup baseline)
+run_job "reduced_wsrl_seed${SEED}" \
+  bash experiments/scripts/antmaze/launch_wsrl_reduced_warmup.sh \
     --env "${ENV_NAME}" \
     --resume_path "${CKPT}" \
     --seed "${SEED}" \
-    --save_dir "${SAVE_ROOT}/full_wsrl" \
-    --exp_name "full_wsrl_seed${SEED}"
+    --save_dir "${SAVE_ROOT}/reduced_wsrl" \
+    --exp_name "reduced_wsrl_seed${SEED}"
 
-# 4. Full-warmup BT-CCQ  (test: standard warmup + gate)
+# 3. Full-warmup BT-CCQ  (test: standard warmup + gate)
 run_job "full_btccq_seed${SEED}" \
   bash experiments/scripts/antmaze/launch_btccq_full_warmup.sh \
     --env "${ENV_NAME}" \
@@ -100,6 +96,15 @@ run_job "full_btccq_seed${SEED}" \
     --seed "${SEED}" \
     --save_dir "${SAVE_ROOT}/full_btccq" \
     --exp_name "full_btccq_seed${SEED}"
+
+# 4. Full-warmup WSRL  (control: standard WSRL baseline)
+run_job "full_wsrl_seed${SEED}" \
+  bash experiments/scripts/antmaze/launch_wsrl_full_warmup.sh \
+    --env "${ENV_NAME}" \
+    --resume_path "${CKPT}" \
+    --seed "${SEED}" \
+    --save_dir "${SAVE_ROOT}/full_wsrl" \
+    --exp_name "full_wsrl_seed${SEED}"
 
 echo ""
 echo "============================================================"
