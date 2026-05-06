@@ -95,11 +95,17 @@ def get_config(config_string):
             dict(
                 # NOTE: arch must match `antmaze_cql` exactly because reduced/full
                 # WSRL restore from the antmaze_cql CalQL pretrain checkpoint.
-                # wsrl_config.py defaults use_layer_norm=True at the dict level,
-                # so we explicitly set it False here AND in network_kwargs to
-                # override at every level.
+                # Two overrides from upstream wsrl_config defaults:
+                #   - use_layer_norm=False (CalQL pretrain has no LayerNorm)
+                #   - critic_ensemble_size=2 / critic_subsample_size=None
+                #     (CalQL pretrain uses 2-head double-Q, not 10-head REDQ).
+                #   Without these, Orbax restore silently leaves uninitialised
+                #   parameters and a chex shape assert fails on the first
+                #   gradient step.
                 agent_kwargs=get_wsrl_config(
                     updates=dict(
+                        critic_ensemble_size=2,
+                        critic_subsample_size=None,
                         policy_kwargs=dict(
                             tanh_squash_distribution=True,
                             std_parameterization="uniform",
