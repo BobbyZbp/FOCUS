@@ -1,6 +1,6 @@
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export PYOPENGL_PLATFORM=egl
-export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=osmesa
+export MUJOCO_GL=osmesa
 
 python3 finetune.py \
 --agent sac \

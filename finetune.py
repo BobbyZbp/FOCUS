@@ -338,12 +338,17 @@ def main(_):
     }
 
     """
-    Initialize agent
+    Initialize agent.
+
+    For --agent btccq, we first build a CalQLAgent to load the pretrained
+    checkpoint into (BTCCQAgent has an extra offline_params pytree field that
+    has no value yet), then wrap into BTCCQAgent below after calibration.
     """
     rng = jax.random.PRNGKey(FLAGS.seed)
     rng, construct_rng = jax.random.split(rng)
     example_batch = subsample_batch(dataset, FLAGS.batch_size)
-    agent = agents[FLAGS.agent].create(
+    _create_agent_name = "calql" if FLAGS.agent == "btccq" else FLAGS.agent
+    agent = agents[_create_agent_name].create(
         rng=construct_rng,
         observations=example_batch["observations"],
         actions=example_batch["actions"],

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# WSRL baseline on antmaze-medium-diverse-v2 — reduced warmup (1250 steps = 25% of full)
+# WSRL baseline on antmaze-large-diverse-v2 — reduced warmup (1250 steps = 25% of full)
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export PYOPENGL_PLATFORM=egl
-export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=osmesa
+export MUJOCO_GL=osmesa
 
 python3 finetune.py \
   --agent sac \
   --config experiments/configs/train_config.py:antmaze_wsrl \
-  --env antmaze-medium-diverse-v2 \
+  --env antmaze-large-diverse-v2 \
   --reward_scale 10.0 \
   --reward_bias -5.0 \
   --num_offline_steps 1_000_000 \
@@ -16,6 +16,6 @@ python3 finetune.py \
   --batch_size 1024 \
   --warmup_steps 1250 \
   --project bt-ccq \
-  --group antmaze_medium \
+  --group antmaze_large_diverse \
   --exp_name wsrl_reduced_warmup \
   $@
