@@ -195,10 +195,15 @@ class BTCCQAgent(CalQLAgent):
             w_out:          minimum gate weight
             eps:            numerical stability constant
         """
-        new_config = dict(calql_agent.config)
-        new_config["btccq_q_hat"] = float(q_hat)
-        new_config["btccq_w_out"] = float(w_out)
-        new_config["btccq_eps"] = float(eps)
+        # Preserve config type — SACAgent.update_config calls self.config.copy(updates)
+        # which exists on FrozenDict and ConfigDict but NOT on plain dict.
+        new_config = calql_agent.config.copy(
+            {
+                "btccq_q_hat": float(q_hat),
+                "btccq_w_out": float(w_out),
+                "btccq_eps": float(eps),
+            }
+        )
 
         return cls(
             state=calql_agent.state,

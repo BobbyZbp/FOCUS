@@ -204,15 +204,49 @@ def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
         residuals.append(e_down.reshape(-1))
 
     residuals = np.concatenate(residuals)
-    q_hat = float(np.quantile(residuals, 1.0 - alpha))
+
+    # ---- Positive-tail calibration with floor ----
+    # In sparse-reward AntMaze, the one-sided residual e_i = max(0, z_off - Q_off)
+    # is heavily zero-inflated (often 99%+ zeros): for most (s,a), the offline
+    # critic is already conservative w.r.t. its own bootstrap target. Taking the
+    # (1-alpha)-quantile over the full residual array collapses q_hat to 0,
+    # which would saturate the gate to w_out for any nonzero delta.
+    #
+    # Conformal-prediction interpretation: when violations are rare, calibrate
+    # the threshold over the violation magnitudes. We therefore estimate q_hat
+    # from the positive tail and floor it to avoid the degenerate q_hat=0 case.
+    eps_res = 1e-6
+    min_positive_frac = 0.001  # need at least 0.1% positive samples to trust tail
+    q_min = 0.05  # floor; AntMaze Q-scale is in the tens to hundreds after r_scale=10
+
+    positive = residuals[residuals > eps_res]
+    positive_frac = float(positive.size) / float(residuals.size)
+
+    if positive.size >= max(50, min_positive_frac * residuals.size):
+        q_hat_raw = float(np.quantile(positive, 1.0 - alpha))
+    else:
+        # Too few violations to reliably estimate the tail; degrade gracefully.
+        q_hat_raw = 0.0
+
+    q_hat = max(q_min, q_hat_raw)
 
     stats = {
         "btccq/q_hat": q_hat,
+        "btccq/q_hat_raw": q_hat_raw,
         "btccq/calib_e_mean": float(residuals.mean()),
         "btccq/calib_e_std": float(residuals.std()),
-        "btccq/calib_e_p50": float(np.quantile(residuals, 0.50)),
-        "btccq/calib_e_p90": float(np.quantile(residuals, 0.90)),
-        "btccq/calib_zero_frac": float((residuals == 0).mean()),
+        "btccq/calib_zero_frac": float((residuals <= eps_res).mean()),
+        "btccq/calib_positive_frac": positive_frac,
+        "btccq/calib_positive_n": int(positive.size),
+        "btccq/calib_positive_mean": (
+            float(positive.mean()) if positive.size > 0 else 0.0
+        ),
+        "btccq/calib_positive_p50": (
+            float(np.quantile(positive, 0.50)) if positive.size > 0 else 0.0
+        ),
+        "btccq/calib_positive_p90": (
+            float(np.quantile(positive, 0.90)) if positive.size > 0 else 0.0
+        ),
         "btccq/calib_n": int(residuals.size),
     }
     return q_hat, stats
