@@ -107,6 +107,31 @@ config_flags.DEFINE_config_file(
 )
 
 
+def compute_fixed_q_stats(agent, fixed_diag_batch):
+    """
+    Compute Q-statistics on a fixed offline (s,a) batch.
+    Stable distribution → suitable for Q-collapse plots across training.
+    """
+    rng = jax.random.PRNGKey(0)
+    q = agent.forward_critic(
+        fixed_diag_batch["observations"],
+        fixed_diag_batch["actions"],
+        rng=rng,
+        train=False,
+    )  # (ensemble_size, batch_size)
+    q_min = q.min(axis=0)  # conservative estimate per (s,a)
+    q_min = np.asarray(q_min)
+    return {
+        "q_diag/q_eval_mean": float(q_min.mean()),
+        "q_diag/q_eval_std": float(q_min.std()),
+        "q_diag/q_eval_min": float(q_min.min()),
+        "q_diag/q_eval_max": float(q_min.max()),
+        "q_diag/q_eval_p10": float(np.quantile(q_min, 0.10)),
+        "q_diag/q_eval_p50": float(np.quantile(q_min, 0.50)),
+        "q_diag/q_eval_p90": float(np.quantile(q_min, 0.90)),
+    }
+
+
 def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
     """
     Compute q_hat from a held-out calibration split of the offline dataset.
@@ -297,6 +322,20 @@ def main(_):
         seed=FLAGS.seed,
         discount=FLAGS.config.agent_kwargs.discount if _needs_mc else None,
     )
+
+    """
+    Fixed diagnostic batch (sampled once from offline data).
+    Used at every eval to compute Q-collapse statistics on a stable distribution.
+    """
+    _diag_rng = np.random.default_rng(FLAGS.seed)
+    _diag_n = min(2048, dataset["observations"].shape[0])
+    _diag_idx = _diag_rng.choice(
+        dataset["observations"].shape[0], size=_diag_n, replace=False
+    )
+    fixed_diag_batch = {
+        "observations": jax.numpy.asarray(dataset["observations"][_diag_idx]),
+        "actions": jax.numpy.asarray(dataset["actions"][_diag_idx]),
+    }
 
     """
     Initialize agent
@@ -524,6 +563,10 @@ def main(_):
                     step_number=step,
                     wandb_logger=wandb_logger,
                 )
+
+                # Q-collapse diagnostic on fixed offline batch
+                q_diag_stats = compute_fixed_q_stats(agent, fixed_diag_batch)
+                wandb_logger.log({"q_diag": q_diag_stats}, step=step)
 
         """
         Save Checkpoint
