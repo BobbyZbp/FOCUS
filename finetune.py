@@ -538,11 +538,22 @@ def main(_):
     """
     timer = Timer()
     step = int(agent.state.step)  # 0 for new agents, or load from pre-trained
+
+    # If we restored from a checkpoint (step > 0) but the user passed
+    # --num_offline_steps 0 (skip pretrain), the original
+    # range(step, num_offline_steps + num_online_steps) becomes empty
+    # because num_offline_steps + num_online_steps < step. Lift the upper
+    # bound so we always run num_online_steps of online updates.
+    _final_step = max(
+        FLAGS.num_offline_steps + FLAGS.num_online_steps,
+        step + FLAGS.num_online_steps,
+    )
+
     is_online_stage = False
     observation, info = finetune_env.reset()
     done = False  # env done signal
 
-    for _ in tqdm.tqdm(range(step, FLAGS.num_offline_steps + FLAGS.num_online_steps)):
+    for _ in tqdm.tqdm(range(step, _final_step)):
         """
         Switch from offline to online
         """
