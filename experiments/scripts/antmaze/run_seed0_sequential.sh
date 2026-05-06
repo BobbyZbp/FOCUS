@@ -70,6 +70,16 @@ run_job () {
 # blows up on the real checkpoint), we want to know in 10 min, not 30.
 # WSRL is upstream / well-tested baseline; it almost never breaks.
 
+# Eval is expensive on antmaze-large because untrained policies get stuck
+# in the maze and run all 1000 steps per episode without reaching goal.
+# 5 trajs every 50k steps = 4 evals total per cell = ~5 min eval / cell.
+EVAL_ARGS=(
+  --eval_interval 50000
+  --n_eval_trajs 5
+  --save_interval 100000
+  --log_interval 10000
+)
+
 # 1. Reduced-warmup BT-CCQ  (test: short warmup + gate)
 run_job "reduced_btccq_seed${SEED}" \
   bash experiments/scripts/antmaze/launch_btccq_reduced_warmup.sh \
@@ -77,7 +87,8 @@ run_job "reduced_btccq_seed${SEED}" \
     --resume_path "${CKPT}" \
     --seed "${SEED}" \
     --save_dir "${SAVE_ROOT}/reduced_btccq" \
-    --exp_name "reduced_btccq_seed${SEED}"
+    --exp_name "reduced_btccq_seed${SEED}" \
+    "${EVAL_ARGS[@]}"
 
 # 2. Reduced-warmup WSRL  (control: short warmup baseline)
 run_job "reduced_wsrl_seed${SEED}" \
@@ -86,7 +97,8 @@ run_job "reduced_wsrl_seed${SEED}" \
     --resume_path "${CKPT}" \
     --seed "${SEED}" \
     --save_dir "${SAVE_ROOT}/reduced_wsrl" \
-    --exp_name "reduced_wsrl_seed${SEED}"
+    --exp_name "reduced_wsrl_seed${SEED}" \
+    "${EVAL_ARGS[@]}"
 
 # 3. Full-warmup BT-CCQ  (test: standard warmup + gate)
 run_job "full_btccq_seed${SEED}" \
@@ -95,7 +107,8 @@ run_job "full_btccq_seed${SEED}" \
     --resume_path "${CKPT}" \
     --seed "${SEED}" \
     --save_dir "${SAVE_ROOT}/full_btccq" \
-    --exp_name "full_btccq_seed${SEED}"
+    --exp_name "full_btccq_seed${SEED}" \
+    "${EVAL_ARGS[@]}"
 
 # 4. Full-warmup WSRL  (control: standard WSRL baseline)
 run_job "full_wsrl_seed${SEED}" \
@@ -104,7 +117,8 @@ run_job "full_wsrl_seed${SEED}" \
     --resume_path "${CKPT}" \
     --seed "${SEED}" \
     --save_dir "${SAVE_ROOT}/full_wsrl" \
-    --exp_name "full_wsrl_seed${SEED}"
+    --exp_name "full_wsrl_seed${SEED}" \
+    "${EVAL_ARGS[@]}"
 
 echo ""
 echo "============================================================"
