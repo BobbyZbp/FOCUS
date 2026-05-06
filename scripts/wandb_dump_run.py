@@ -107,30 +107,49 @@ def main():
             vals = col_values(c)
             if not vals:
                 continue
+            # Try to format as number; many wandb columns are dicts (e.g. media,
+            # NaN cells stored as objects, etc) so wrap in broad try/except.
             try:
+                first_str = f"{float(vals[0]):.4g}"
+                last_str = f"{float(vals[-1]):.4g}"
                 print(
                     f"  {c:55s}  n={len(vals):4d}  "
-                    f"first={float(vals[0]):.4g}  last={float(vals[-1]):.4g}"
+                    f"first={first_str}  last={last_str}"
                 )
-            except (TypeError, ValueError):
-                # non-numeric (e.g. media), skip number formatting
+            except Exception:
                 print(f"  {c:55s}  n={len(vals):4d}  (non-numeric)")
 
-        # Highlight key metrics for BT-CCQ
+        # Highlight key metrics for BT-CCQ.
+        # WSRL update_info is nested: {"critic": {"btccq/gate_frac": ...}, ...}
+        # so wandb expands keys as training/critic/btccq/<x>, not training/btccq/<x>.
         print("\n----- BT-CCQ key trajectory -----")
         key_cols = [
-            "training/btccq/gate_frac",
-            "training/btccq/gate_mean",
-            "training/btccq/delta_mean",
-            "training/btccq/q_hat",
-            "training/critic_loss",
-            "training/predicted_qs",
-            "training/target_qs",
-            "training/q_diag/q_eval_mean",
-            "training/q_diag/q_eval_max",
+            # gate signals
+            "training/critic/btccq/gate_frac",
+            "training/critic/btccq/gate_mean",
+            "training/critic/btccq/gate_min",
+            "training/critic/btccq/delta_mean",
+            "training/critic/btccq/delta_max",
+            "training/critic/btccq/q_hat",
+            "training/critic/btccq/z_off_mean",
+            "training/critic/btccq/y_live_mean",
+            # critic health
+            "training/critic/critic_loss",
+            "training/critic/predicted_qs",
+            "training/critic/target_qs",
+            # actor / temperature
+            "training/actor/actor_loss",
+            "training/temperature/temperature_loss",
+            # Q-collapse diagnostic
+            "q_diag/q_diag/q_eval_mean",
+            "q_diag/q_diag/q_eval_max",
+            "q_diag/q_diag/q_eval_min",
+            "q_diag/q_diag/q_eval_std",
+            # eval performance
             "evaluation/success_rate",
             "evaluation/average_return",
             "evaluation/average_normalized_return",
+            "evaluation/average_traj_length",
         ]
         for col in key_cols:
             vals = col_values(col)
