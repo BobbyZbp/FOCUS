@@ -12,6 +12,7 @@ Defaults to wandb entity/project: bz292-cornell-university/wsrl
 """
 
 import argparse
+import csv
 import os
 import sys
 
@@ -57,24 +58,63 @@ def main():
         print(f"URL: {run.url}")
         print(f"{'='*70}")
 
-        # Full history -> CSV
-        hist = run.history(samples=10000, pandas=True)
-        out_csv = os.path.join(args.out_dir, f"{run.name}.csv")
-        hist.to_csv(out_csv, index=False)
-        print(f"Wrote {len(hist)} rows to {out_csv}")
+        # Full history -> CSV (pandas optional)
+        try:
+            import pandas as pd  # noqa: F401
+
+            hist_df = run.history(samples=10000, pandas=True)
+            use_pandas = hasattr(hist_df, "to_csv")
+        except ImportError:
+            use_pandas = False
+            hist_df = run.history(samples=10000, pandas=False)
+
+        if use_pandas:
+            out_csv = os.path.join(args.out_dir, f"{run.name}.csv")
+            hist_df.to_csv(out_csv, index=False)
+            print(f"Wrote {len(hist_df)} rows to {out_csv} (via pandas)")
+
+            cols = sorted(hist_df.columns)
+
+            def col_values(c):
+                return [v for v in hist_df[c].tolist() if v is not None]
+
+        else:
+            # hist_df is a list of dicts
+            rows = list(hist_df)
+            print(f"Got {len(rows)} rows (no pandas, will write raw CSV)")
+            # collect all keys
+            all_keys = set()
+            for r in rows:
+                all_keys.update(r.keys())
+            cols = sorted(all_keys)
+
+            out_csv = os.path.join(args.out_dir, f"{run.name}.csv")
+            with open(out_csv, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=cols)
+                w.writeheader()
+                for r in rows:
+                    w.writerow({k: r.get(k, "") for k in cols})
+            print(f"Wrote {len(rows)} rows to {out_csv} (raw CSV)")
+
+            def col_values(c):
+                return [r.get(c) for r in rows if r.get(c) is not None]
 
         # Print available columns (so you know what's logged)
-        print("\nAvailable metrics:")
-        for c in sorted(hist.columns):
+        print("\nAvailable metrics (non-empty):")
+        for c in cols:
             if c.startswith("_"):
                 continue
-            non_null = hist[c].dropna()
-            if len(non_null) == 0:
+            vals = col_values(c)
+            if not vals:
                 continue
-            print(
-                f"  {c:55s}  n={len(non_null):4d}  "
-                f"first={non_null.iloc[0]:.4g}  last={non_null.iloc[-1]:.4g}"
-            )
+            try:
+                print(
+                    f"  {c:55s}  n={len(vals):4d}  "
+                    f"first={float(vals[0]):.4g}  last={float(vals[-1]):.4g}"
+                )
+            except (TypeError, ValueError):
+                # non-numeric (e.g. media), skip number formatting
+                print(f"  {c:55s}  n={len(vals):4d}  (non-numeric)")
 
         # Highlight key metrics for BT-CCQ
         print("\n----- BT-CCQ key trajectory -----")
@@ -93,23 +133,25 @@ def main():
             "evaluation/average_normalized_return",
         ]
         for col in key_cols:
-            if col in hist.columns:
-                vals = hist[col].dropna()
-                if len(vals) == 0:
-                    continue
-                # Show first, p25, mid, p75, last
-                n = len(vals)
-                snapshot = [
-                    ("step0", vals.iloc[0]),
-                    ("p25", vals.iloc[n // 4]),
-                    ("mid", vals.iloc[n // 2]),
-                    ("p75", vals.iloc[3 * n // 4]),
-                    ("last", vals.iloc[-1]),
-                ]
-                line = "  ".join(f"{l}={v:.3g}" for l, v in snapshot)
-                print(f"  {col:48s} {line}")
-            else:
+            vals = col_values(col)
+            if not vals:
                 print(f"  {col:48s} (NOT LOGGED)")
+                continue
+            try:
+                vals_f = [float(v) for v in vals]
+            except (TypeError, ValueError):
+                print(f"  {col:48s} (non-numeric)")
+                continue
+            n = len(vals_f)
+            snapshot = [
+                ("step0", vals_f[0]),
+                ("p25", vals_f[n // 4]),
+                ("mid", vals_f[n // 2]),
+                ("p75", vals_f[3 * n // 4]),
+                ("last", vals_f[-1]),
+            ]
+            line = "  ".join(f"{l}={v:.3g}" for l, v in snapshot)
+            print(f"  {col:48s} {line}")
 
 
 if __name__ == "__main__":
