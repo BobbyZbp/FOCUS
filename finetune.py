@@ -203,39 +203,95 @@ def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
         e_down = np.maximum(0.0, np.asarray(z_off) - np.asarray(q_off_sa))
         residuals.append(e_down.reshape(-1))
 
-    residuals = np.concatenate(residuals)
+    residuals_oneside = np.concatenate(residuals)
+    # `residuals_oneside` is the e_i = max(0, b_i) sequence. For the IQR-based
+    # scale floor we also need the signed residual b_i = z_off - Q_off, which we
+    # recover from the magnitude of e_i (it would have been simpler to also
+    # accumulate b_i above, but keeping this self-contained for clarity).
 
-    # ---- Positive-tail calibration with floor ----
-    # In sparse-reward AntMaze, the one-sided residual e_i = max(0, z_off - Q_off)
-    # is heavily zero-inflated (often 99%+ zeros): for most (s,a), the offline
-    # critic is already conservative w.r.t. its own bootstrap target. Taking the
-    # (1-alpha)-quantile over the full residual array collapses q_hat to 0,
-    # which would saturate the gate to w_out for any nonzero delta.
+    # NOTE: we re-walk the calibration set once more to also collect signed b_i.
+    # This second pass is small (calib_ratio of dataset, no grad) and lets us
+    # compute IQR(b) for the scale-aware floor without changing the loop above.
+    signed_b = []
+    for start in range(0, n_calib, batch_size):
+        end = min(start + batch_size, n_calib)
+        obs = calib["observations"][start:end]
+        actions = calib["actions"][start:end]
+        rewards = calib["rewards"][start:end]
+        next_obs = calib["next_observations"][start:end]
+        masks = calib["masks"][start:end]
+
+        rng, k1, k2, k3 = jax.random.split(rng, 4)
+        q_off_sa = apply_fn(
+            {"params": offline_params},
+            obs,
+            actions,
+            name="critic",
+            rngs={"dropout": k1},
+            train=False,
+        ).min(axis=0)
+        a_next_off = apply_fn(
+            {"params": offline_params},
+            next_obs,
+            name="actor",
+            rngs={"dropout": k2},
+            train=False,
+        ).mode()
+        v_off_next = apply_fn(
+            {"params": offline_params},
+            next_obs,
+            a_next_off,
+            name="critic",
+            rngs={"dropout": k3},
+            train=False,
+        ).min(axis=0)
+        z_off = rewards + gamma * masks * v_off_next
+        b = np.asarray(z_off) - np.asarray(q_off_sa)
+        signed_b.append(b.reshape(-1))
+    signed_b = np.concatenate(signed_b)
+
+    # ---- Zero-inflation-aware calibration with scale-aware floor ----
+    # Final BT-CCQ threshold:
+    #     q_hat = max(q_tail, q_scale, q_min)
+    # where
+    #     q_tail  = Quantile_{1-alpha}({e_i : e_i > eps})        (positive tail)
+    #     q_scale = lambda * IQR(b_i)   with b_i = z_off - Q_off (scale-aware floor)
+    #     q_min   = small absolute floor                          (degenerate guard)
     #
-    # Conformal-prediction interpretation: when violations are rare, calibrate
-    # the threshold over the violation magnitudes. We therefore estimate q_hat
-    # from the positive tail and floor it to avoid the degenerate q_hat=0 case.
+    # Why three terms:
+    # - q_tail handles dense and zero-inflated cases as long as enough positives.
+    # - q_scale adapts to the natural noise level of the offline Bellman residual,
+    #   so the threshold remains usable even when positives are scarce.
+    # - q_min prevents pathological collapse to 0 in extreme degenerate regimes.
     eps_res = 1e-6
-    min_positive_frac = 0.001  # need at least 0.1% positive samples to trust tail
-    q_min = 0.05  # floor; AntMaze Q-scale is in the tens to hundreds after r_scale=10
+    min_positive_frac = 0.001  # need at least 0.1% positives to trust the tail
+    lambda_scale = 0.05  # scale-aware floor coefficient (paper hyperparam)
+    q_min = 1e-3  # absolute floor; never let q_hat collapse below this
 
-    positive = residuals[residuals > eps_res]
-    positive_frac = float(positive.size) / float(residuals.size)
+    positive = residuals_oneside[residuals_oneside > eps_res]
+    positive_frac = float(positive.size) / float(residuals_oneside.size)
 
-    if positive.size >= max(50, min_positive_frac * residuals.size):
-        q_hat_raw = float(np.quantile(positive, 1.0 - alpha))
+    if positive.size >= max(50, min_positive_frac * residuals_oneside.size):
+        q_tail = float(np.quantile(positive, 1.0 - alpha))
     else:
-        # Too few violations to reliably estimate the tail; degrade gracefully.
-        q_hat_raw = 0.0
+        # Too few violations to reliably estimate the tail; rely on q_scale / q_min.
+        q_tail = 0.0
 
-    q_hat = max(q_min, q_hat_raw)
+    iqr_b = float(np.quantile(signed_b, 0.75) - np.quantile(signed_b, 0.25))
+    q_scale = lambda_scale * max(iqr_b, 0.0)
+
+    q_hat = max(q_tail, q_scale, q_min)
 
     stats = {
+        # Final threshold and its three components (paper diagnostic)
         "btccq/q_hat": q_hat,
-        "btccq/q_hat_raw": q_hat_raw,
-        "btccq/calib_e_mean": float(residuals.mean()),
-        "btccq/calib_e_std": float(residuals.std()),
-        "btccq/calib_zero_frac": float((residuals <= eps_res).mean()),
+        "btccq/q_tail": q_tail,
+        "btccq/q_scale": q_scale,
+        "btccq/q_min": q_min,
+        # Residual-side diagnostics
+        "btccq/calib_e_mean": float(residuals_oneside.mean()),
+        "btccq/calib_e_std": float(residuals_oneside.std()),
+        "btccq/calib_zero_frac": float((residuals_oneside <= eps_res).mean()),
         "btccq/calib_positive_frac": positive_frac,
         "btccq/calib_positive_n": int(positive.size),
         "btccq/calib_positive_mean": (
@@ -247,7 +303,11 @@ def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
         "btccq/calib_positive_p90": (
             float(np.quantile(positive, 0.90)) if positive.size > 0 else 0.0
         ),
-        "btccq/calib_n": int(residuals.size),
+        # Signed-residual scale diagnostics
+        "btccq/calib_b_iqr": iqr_b,
+        "btccq/calib_b_p25": float(np.quantile(signed_b, 0.25)),
+        "btccq/calib_b_p75": float(np.quantile(signed_b, 0.75)),
+        "btccq/calib_n": int(residuals_oneside.size),
     }
     return q_hat, stats
 
