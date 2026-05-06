@@ -64,6 +64,11 @@ def get_config(config_string):
 
         "antmaze_btccq": ConfigDict(
             dict(
+                # NOTE: arch must match `antmaze_cql` exactly because BT-CCQ
+                # restores from the antmaze_cql CalQL checkpoint. WSRL adds
+                # use_layer_norm=True but our CalQL pretrain didn't, so we
+                # also keep it off here to avoid uninitialised LayerNorm
+                # parameters at restore time.
                 agent_kwargs=get_btccq_config(
                     updates=dict(
                         policy_kwargs=dict(
@@ -74,13 +79,11 @@ def get_config(config_string):
                             "hidden_dims": [256, 256, 256, 256],
                             "activations": "relu",
                             "kernel_scale_final": 1e-2,
-                            "use_layer_norm": True,
                         },
                         policy_network_kwargs={
                             "hidden_dims": [256, 256],
                             "activations": "relu",
                             "kernel_scale_final": 1e-2,
-                            "use_layer_norm": True,
                         },
                         max_target_backup=True,
                     )
