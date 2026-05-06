@@ -199,15 +199,22 @@ class BTCCQAgent(SACAgent):
             w_out:          minimum gate weight
             eps:            numerical stability constant
         """
-        # Preserve config type — SACAgent.update_config calls self.config.copy(updates)
-        # which exists on FrozenDict and ConfigDict but NOT on plain dict.
-        new_config = sac_agent.config.copy(
-            {
-                "btccq_q_hat": float(q_hat),
-                "btccq_w_out": float(w_out),
-                "btccq_eps": float(eps),
-            }
-        )
+        # SACAgent stores config as a plain dict; CalQLAgent stores it as
+        # FrozenDict. Plain dict.copy() takes no args, FrozenDict.copy(updates)
+        # does. Handle both.
+        updates = {
+            "btccq_q_hat": float(q_hat),
+            "btccq_w_out": float(w_out),
+            "btccq_eps": float(eps),
+        }
+        old_config = sac_agent.config
+        if isinstance(old_config, dict) and not hasattr(old_config, "freeze"):
+            # plain dict (SACAgent path) -- shallow copy and update
+            new_config = dict(old_config)
+            new_config.update(updates)
+        else:
+            # FrozenDict / ConfigDict path
+            new_config = old_config.copy(updates)
 
         return cls(
             state=sac_agent.state,
