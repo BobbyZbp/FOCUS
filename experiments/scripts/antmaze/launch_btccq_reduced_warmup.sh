@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# BT-CCQ on antmaze-large-diverse-v2 — reduced warmup (1250 steps = 25% of full)
+# BT-CCQ v2 (WSRL-aligned) on antmaze-large-diverse-v2 — reduced warmup
+# (1250 steps = 25% of full). See launch_btccq_full_warmup.sh for design notes.
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export PYOPENGL_PLATFORM=osmesa
 export MUJOCO_GL=osmesa
 
 python finetune.py \
   --agent btccq \
-  --config experiments/configs/train_config.py:antmaze_btccq \
+  --config experiments/configs/train_config.py:antmaze_btccq_v2 \
   --env antmaze-large-diverse-v2 \
   --reward_scale 10.0 \
   --reward_bias -5.0 \
-  --num_offline_steps 1_000_000 \
+  --num_offline_steps 0 \
   --num_online_steps 200_000 \
   --utd 4 \
   --batch_size 1024 \

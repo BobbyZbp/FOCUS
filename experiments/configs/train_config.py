@@ -8,14 +8,28 @@ from experiments.configs.wsrl_config import get_config as get_wsrl_config
 
 def get_btccq_config(updates=None):
     """CalQL-based config for BT-CCQ: CQL foundation + WSRL-style network arch."""
-    return get_cql_config(updates=dict(
-        use_calql=True,
-        calql_bound_random_actions=False,
-        cql_autotune_alpha=True,
-        cql_target_action_gap=0.8,
-        online_cql_alpha=0.0,   # drop CQL penalty online; gate handles OOD
-        **(updates or {}),
-    ))
+    return get_cql_config(
+        updates=dict(
+            use_calql=True,
+            calql_bound_random_actions=False,
+            cql_autotune_alpha=True,
+            cql_target_action_gap=0.8,
+            online_cql_alpha=0.0,  # drop CQL penalty online; gate handles OOD
+            **(updates or {}),
+        )
+    )
+
+
+def get_btccq_v2_config(updates=None):
+    """
+    Pure SAC config for BT-CCQ v2 (WSRL-aligned).
+
+    Inherits sac_config defaults so there are no CQL keys at all. The
+    v2 BTCCQAgent inherits SACAgent and applies only the gate, so this
+    config must NOT contain CQL keys (cql_n_actions, cql_alpha, etc) —
+    they would just be ignored, but keeping them clean avoids confusion.
+    """
+    return get_sac_config(updates=updates)
 
 
 def get_config(config_string):
@@ -86,6 +100,39 @@ def get_config(config_string):
                             "kernel_scale_final": 1e-2,
                         },
                         max_target_backup=True,
+                    )
+                ).to_dict(),
+            )
+        ),
+
+        "antmaze_btccq_v2": ConfigDict(
+            dict(
+                # WSRL-aligned BT-CCQ: pure SAC online + BT gate (no CQL anywhere).
+                # Architecture matches the antmaze_cql pretrain checkpoint:
+                #   - 2-head double-Q critic (sac_config default)
+                #   - no LayerNorm (sac_config default; CalQL pretrain didn't use it)
+                #   - same critic/policy hidden dims
+                # The only "WSRL-style" deviation from sac_config is
+                # backup_entropy=True (standard in modern SAC).
+                agent_kwargs=get_btccq_v2_config(
+                    updates=dict(
+                        backup_entropy=True,
+                        policy_kwargs=dict(
+                            tanh_squash_distribution=True,
+                            std_parameterization="uniform",
+                        ),
+                        critic_network_kwargs={
+                            "hidden_dims": [256, 256, 256, 256],
+                            "activations": "relu",
+                            "kernel_scale_final": 1e-2,
+                            "use_layer_norm": False,
+                        },
+                        policy_network_kwargs={
+                            "hidden_dims": [256, 256],
+                            "activations": "relu",
+                            "kernel_scale_final": 1e-2,
+                            "use_layer_norm": False,
+                        },
                     )
                 ).to_dict(),
             )

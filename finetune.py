@@ -326,9 +326,10 @@ def main(_):
 
     min_steps_to_update = FLAGS.batch_size * (1 - FLAGS.offline_data_ratio)
     if FLAGS.agent in ("calql", "btccq"):
-        # Need at least one full episode in the online replay buffer before
-        # we sample a minibatch from it (avoids replay_buffer.sample() raising
-        # ValueError when the buffer is smaller than batch_size).
+        # btccq inherits SACAgent (no MC returns needed), but the warmup
+        # logic is identical: collect at least one full episode of online
+        # data before the first update so replay_buffer.sample() doesn't
+        # raise ValueError on a too-small buffer.
         min_steps_to_update = max(
             min_steps_to_update, gym.make(FLAGS.env)._max_episode_steps
         )
@@ -390,9 +391,9 @@ def main(_):
             clip_action=FLAGS.clip_action,
         )
     else:
-        if FLAGS.agent in ("calql", "btccq"):
-            # need dataset with mc return (BTCCQAgent inherits CalQL CQL loss
-            # which uses calql_bound_random_actions / mc_returns)
+        # btccq v2 inherits SACAgent (no CQL/MC), so it doesn't need mc_returns.
+        # We therefore only ask for the MC dataset for actual calql runs.
+        if FLAGS.agent == "calql":
             dataset = get_d4rl_dataset_with_mc_calculation(
                 FLAGS.env,
                 reward_scale=FLAGS.reward_scale,
@@ -411,7 +412,8 @@ def main(_):
     """
     replay buffer
     """
-    _needs_mc = FLAGS.agent in ("calql", "btccq")
+    # btccq is now SAC-based and does not need MC returns.
+    _needs_mc = FLAGS.agent == "calql"
     replay_buffer_type = ReplayBufferMC if _needs_mc else ReplayBuffer
     replay_buffer = replay_buffer_type(
         finetune_env.observation_space,
@@ -438,14 +440,19 @@ def main(_):
     """
     Initialize agent.
 
-    For --agent btccq, we first build a CalQLAgent to load the pretrained
-    checkpoint into (BTCCQAgent has an extra offline_params pytree field that
-    has no value yet), then wrap into BTCCQAgent below after calibration.
+    For --agent btccq we build a SACAgent first to load the pretrained
+    checkpoint into (BTCCQAgent inherits SACAgent and has an extra
+    offline_params pytree field that has no value yet); we wrap into
+    BTCCQAgent below after calibration. Critic + actor architecture in the
+    v2 config is chosen to match the CalQL pretrain checkpoint exactly
+    (2-Q ensemble, no LayerNorm), so Orbax restore is clean and the only
+    parameters that get dropped are the CQL-specific lagrange multiplier
+    (which SACAgent doesn't have and doesn't need).
     """
     rng = jax.random.PRNGKey(FLAGS.seed)
     rng, construct_rng = jax.random.split(rng)
     example_batch = subsample_batch(dataset, FLAGS.batch_size)
-    _create_agent_name = "calql" if FLAGS.agent == "btccq" else FLAGS.agent
+    _create_agent_name = "sac" if FLAGS.agent == "btccq" else FLAGS.agent
     agent = agents[_create_agent_name].create(
         rng=construct_rng,
         observations=example_batch["observations"],
@@ -551,8 +558,9 @@ def main(_):
                     transition = {k: v[j] for k, v in dataset_items}
                     replay_buffer.insert(transition)
 
-            # option for CQL / CalQL / BT-CCQ to change the online alpha and CQL regularizer
-            if FLAGS.agent in ("cql", "calql", "btccq"):
+            # option for CQL / CalQL to change the online alpha and CQL regularizer.
+            # btccq is now SAC-based -- no CQL knobs to update.
+            if FLAGS.agent in ("cql", "calql"):
                 online_agent_configs = {
                     "cql_alpha": FLAGS.config.agent_kwargs.get(
                         "online_cql_alpha", None

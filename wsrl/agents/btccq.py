@@ -1,48 +1,53 @@
 """
-BT-CCQ agent.
+BT-CCQ agent (WSRL-aligned).
 
-Extends CalQLAgent with a gate-weighted critic TD loss.
-Everything else — actor, temperature, target update, high-UTD scan,
-replay, warmup, evaluation — is untouched.
-
-The only algorithmic change:
-    critic_loss = mean(gate * (Q - y_live)^2)
+Inherits SACAgent (NOT CalQLAgent) so the online fine-tuning objective is
+strictly:
+    critic_loss = mean( gate(s,a) * (Q(s,a) - y_live)^2 )
+                  + (no CQL penalty)
 
 where
-    delta   = max(0, z_off - y_live)
-    gate    = 1                         if delta <= q_hat
-            = max(w_out, q_hat/delta)   otherwise
+    delta(s,a) = max(0, z_off(s,a) - y_live(s,a))
+    gate       = 1                          if delta <= q_hat
+               = max(w_out, q_hat/delta)    otherwise
 
 and
     z_off = r + gamma * masks * V_off(s')
     V_off(s') = min_j Q_off^j(s', pi_off(s'))
 
-Frozen offline params are stored as pytree fields so JAX can trace through
+Frozen offline params are stored as a pytree field so JAX can trace through
 them inside JIT.  q_hat, w_out, eps are stored in config (nonpytree_field)
 as plain Python scalars — fine because they never change.
+
+Key design choice (relative to earlier CalQL-based BTCCQAgent):
+- Inheriting SACAgent removes the CQL pessimism path entirely. The gate is
+  the *only* mechanism modulating the critic objective, which matches the
+  WSRL "online SAC fine-tune from offline init" setting in the original
+  paper. Earlier prototype inherited CalQLAgent which left
+  cql_alpha_lagrange / cql_max_target_backup / CQL action sampling active
+  during online training and confounded the BT-CCQ ablation.
 """
 
-from functools import partial
-from typing import Optional, Tuple
+from typing import Optional
 
 import chex
-import flax
 import jax
 import jax.numpy as jnp
 from overrides import overrides
 
-from wsrl.agents.calql import CalQLAgent
+from wsrl.agents.sac import SACAgent
 from wsrl.common.typing import Batch, Params, PRNGKey
 
 
-class BTCCQAgent(CalQLAgent):
+class BTCCQAgent(SACAgent):
     """
-    CalQL + BT-CCQ gate on the critic TD loss.
+    SAC + BT-CCQ gate on the critic TD loss.
 
-    Extra fields (all pytree nodes so JAX can differentiate / JIT through):
-        offline_params: frozen copy of the CalQL-pretrained params
+    Extra pytree field:
+        offline_params: frozen copy of the pretrained CalQL params (or
+                        any pretrained Q/policy params with the same arch)
 
-    Extra config keys (nonpytree scalars, set at construction time):
+    Extra nonpytree config keys:
         btccq_q_hat   float   calibrated threshold
         btccq_w_out   float   minimum gate weight (default 0.2)
         btccq_eps     float   numerical stability (default 1e-6)
@@ -55,14 +60,14 @@ class BTCCQAgent(CalQLAgent):
     @overrides
     def critic_loss_fn(self, batch: Batch, params: Params, rng: PRNGKey):
         """
-        Gate-weighted TD loss.  Calls super() to get the standard CalQL
-        critic loss, then replaces the MSE term with gate * MSE.
+        Pure SAC TD loss × gate. No CQL penalty, no CQL max-target-backup,
+        no CQL n-action sampling.
         """
         batch_size = batch["rewards"].shape[0]
         rng, next_action_sample_key = jax.random.split(rng)
 
         # ------------------------------------------------------------------
-        # 1. Live TD target  y_live  (same as CalQL / SAC)
+        # 1. Live TD target  y_live  (standard SAC, no CQL specials)
         # ------------------------------------------------------------------
         next_actions, next_actions_log_probs = self._compute_next_actions(
             batch, next_action_sample_key
@@ -74,6 +79,7 @@ class BTCCQAgent(CalQLAgent):
             rng=rng,
         )  # (ensemble_size, batch_size)
 
+        # REDQ-style subsample if requested by config
         if self.config["critic_subsample_size"] is not None:
             rng, subsample_key = jax.random.split(rng)
             subsample_idcs = jax.random.randint(
@@ -85,6 +91,8 @@ class BTCCQAgent(CalQLAgent):
             target_next_qs = target_next_qs[subsample_idcs]
 
         target_next_min_q = target_next_qs.min(axis=0)  # (batch_size,)
+
+        # SAC entropy backup (NOT CQL backup)
         target_next_min_q = self._process_target_next_qs(
             target_next_min_q, next_actions_log_probs
         )
@@ -100,14 +108,14 @@ class BTCCQAgent(CalQLAgent):
         # ------------------------------------------------------------------
         next_obs = batch["next_observations"]
 
-        # pi_off(s')
+        # pi_off(s')  — deterministic mode of the frozen pretrained policy
         a_next_off = self.state.apply_fn(
             {"params": self.offline_params},
             next_obs,
             name="actor",
             rngs={"dropout": rng},
             train=False,
-        ).mode()  # deterministic; distrax Distribution.mode()
+        ).mode()
 
         # Q_off(s', pi_off(s'))  →  (ensemble_size, batch_size)
         q_next_off = self.state.apply_fn(
@@ -149,16 +157,12 @@ class BTCCQAgent(CalQLAgent):
         )
 
         # ------------------------------------------------------------------
-        # 5. Gate-weighted MSE loss
+        # 5. Gate-weighted MSE loss (the only critic objective)
         # ------------------------------------------------------------------
         target_qs = y_live[None].repeat(self.config["critic_ensemble_size"], axis=0)
-        # gate broadcast: (1, batch_size) → (ensemble_size, batch_size)
         td_sq = (predicted_qs - target_qs) ** 2  # (E, N)
         critic_loss = jnp.mean(gate[None] * td_sq)
 
-        # ------------------------------------------------------------------
-        # 6. Info dict
-        # ------------------------------------------------------------------
         info = {
             "critic_loss": critic_loss,
             "predicted_qs": jnp.mean(predicted_qs),
@@ -176,9 +180,9 @@ class BTCCQAgent(CalQLAgent):
         return critic_loss, info
 
     @classmethod
-    def create_from_calql(
+    def create_from_sac(
         cls,
-        calql_agent: CalQLAgent,
+        sac_agent: SACAgent,
         offline_params: Params,
         q_hat: float,
         w_out: float = 0.2,
@@ -186,10 +190,10 @@ class BTCCQAgent(CalQLAgent):
     ) -> "BTCCQAgent":
         """
         Construct a BTCCQAgent from an already-created (and optionally
-        checkpoint-restored) CalQLAgent.
+        checkpoint-restored) SACAgent.
 
         Args:
-            calql_agent:    the restored CalQL agent (used as the live agent)
+            sac_agent:      the restored SAC agent (used as the live agent)
             offline_params: frozen copy of the offline checkpoint params
             q_hat:          calibrated BT-CCQ threshold
             w_out:          minimum gate weight
@@ -197,7 +201,7 @@ class BTCCQAgent(CalQLAgent):
         """
         # Preserve config type — SACAgent.update_config calls self.config.copy(updates)
         # which exists on FrozenDict and ConfigDict but NOT on plain dict.
-        new_config = calql_agent.config.copy(
+        new_config = sac_agent.config.copy(
             {
                 "btccq_q_hat": float(q_hat),
                 "btccq_w_out": float(w_out),
@@ -206,7 +210,19 @@ class BTCCQAgent(CalQLAgent):
         )
 
         return cls(
-            state=calql_agent.state,
+            state=sac_agent.state,
             config=new_config,
             offline_params=offline_params,
+        )
+
+    # Backwards-compat alias for older finetune.py call sites
+    @classmethod
+    def create_from_calql(cls, calql_agent, offline_params, q_hat, w_out=0.2, eps=1e-6):
+        """Alias kept so finetune.py doesn't need to change."""
+        return cls.create_from_sac(
+            sac_agent=calql_agent,
+            offline_params=offline_params,
+            q_hat=q_hat,
+            w_out=w_out,
+            eps=eps,
         )
