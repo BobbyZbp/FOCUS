@@ -93,6 +93,11 @@ def get_config(config_string):
 
         "antmaze_wsrl": ConfigDict(
             dict(
+                # NOTE: arch must match `antmaze_cql` exactly because reduced/full
+                # WSRL restore from the antmaze_cql CalQL pretrain checkpoint.
+                # wsrl_config.py defaults use_layer_norm=True at the dict level,
+                # so we explicitly set it False here AND in network_kwargs to
+                # override at every level.
                 agent_kwargs=get_wsrl_config(
                     updates=dict(
                         policy_kwargs=dict(
@@ -103,13 +108,13 @@ def get_config(config_string):
                             "hidden_dims": [256, 256, 256, 256],
                             "activations": "relu",
                             "kernel_scale_final": 1e-2,
-                            "use_layer_norm": True,
+                            "use_layer_norm": False,
                         },
                         policy_network_kwargs={
                             "hidden_dims": [256, 256],
                             "activations": "relu",
                             "kernel_scale_final": 1e-2,
-                            "use_layer_norm": True,
+                            "use_layer_norm": False,
                         },
                         max_target_backup=True,
                     )
