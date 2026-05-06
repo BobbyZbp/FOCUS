@@ -465,32 +465,11 @@ def main(_):
         assert os.path.exists(FLAGS.resume_path), "resume path does not exist"
         agent = checkpoints.restore_checkpoint(FLAGS.resume_path, target=agent)
 
-    """
-    BT-CCQ: calibrate q_hat and wrap agent (only when agent == btccq)
-    """
-    if FLAGS.agent == "btccq":
-        logging.info("BT-CCQ: running offline calibration...")
-        # snapshot offline params before any online updates
-        offline_params = jax.device_get(agent.state.params)
-
-        q_hat, calib_stats = calibrate_qhat(
-            agent=agent,
-            dataset=dataset,
-            gamma=FLAGS.config.agent_kwargs.discount,
-            alpha=FLAGS.btccq_alpha,
-            calib_ratio=FLAGS.btccq_calib_ratio,
-        )
-        logging.info("BT-CCQ calibration: %s", calib_stats)
-        wandb_logger.log({"btccq_calibration": calib_stats}, step=0)
-
-        agent = BTCCQAgent.create_from_calql(
-            calql_agent=agent,
-            offline_params=offline_params,
-            q_hat=q_hat,
-            w_out=FLAGS.btccq_w_out,
-            eps=FLAGS.btccq_eps,
-        )
-        logging.info("BT-CCQ: agent ready, q_hat=%.4f", q_hat)
+    # BT-CCQ wrap is deferred to the offline -> online transition (see
+    # the training loop below). Until then the agent is a vanilla SAC
+    # agent (whether built from scratch or restored from a checkpoint),
+    # which means the offline phase trains as pure SAC -- no gate yet.
+    btccq_pending_wrap = FLAGS.agent == "btccq"
 
     """
     eval function
@@ -579,6 +558,39 @@ def main(_):
                     "use_cql_loss": FLAGS.online_use_cql_loss,
                 }
                 agent.update_config(online_agent_configs)
+
+            # BT-CCQ: at the offline -> online boundary, freeze the
+            # current SAC params as the offline reference, calibrate
+            # q_hat on the d4rl dataset, then wrap the live SACAgent
+            # into a BTCCQAgent so the gate kicks in for online updates.
+            if btccq_pending_wrap:
+                logging.info("BT-CCQ: snapshotting offline params at transition")
+                offline_params = jax.device_get(agent.state.params)
+
+                logging.info("BT-CCQ: running offline calibration...")
+                q_hat, calib_stats = calibrate_qhat(
+                    agent=agent,
+                    dataset=dataset,
+                    gamma=FLAGS.config.agent_kwargs.discount,
+                    alpha=FLAGS.btccq_alpha,
+                    calib_ratio=FLAGS.btccq_calib_ratio,
+                )
+                logging.info("BT-CCQ calibration: %s", calib_stats)
+                wandb_logger.log({"btccq_calibration": calib_stats}, step=step)
+
+                agent = BTCCQAgent.create_from_sac(
+                    sac_agent=agent,
+                    offline_params=offline_params,
+                    q_hat=q_hat,
+                    w_out=FLAGS.btccq_w_out,
+                    eps=FLAGS.btccq_eps,
+                )
+                logging.info(
+                    "BT-CCQ: agent wrapped, q_hat=%.4f, w_out=%.2f",
+                    q_hat,
+                    FLAGS.btccq_w_out,
+                )
+                btccq_pending_wrap = False
 
         timer.tick("total")
 
