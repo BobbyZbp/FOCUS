@@ -11,6 +11,7 @@ from ml_collections import config_flags
 
 from experiments.configs.ensemble_config import add_redq_config
 from wsrl.agents import agents
+from wsrl.agents.btccq import BTCCQAgent
 from wsrl.common.evaluation import evaluate_with_trajectories
 from wsrl.common.wandb import WandBLogger
 from wsrl.data.replay_buffer import ReplayBuffer, ReplayBufferMC
@@ -88,12 +89,101 @@ flags.DEFINE_string("project", None, "Wandb project folder")
 flags.DEFINE_string("group", None, "Wandb group of the experiment")
 flags.DEFINE_bool("debug", False, "If true, no logging to wandb")
 
+# BT-CCQ flags (ignored when agent != btccq)
+flags.DEFINE_float("btccq_alpha",  0.1,  "BT-CCQ miscoverage level for q_hat quantile")
+flags.DEFINE_float("btccq_w_out",  0.2,  "BT-CCQ minimum gate weight for OOD transitions")
+flags.DEFINE_float("btccq_eps",    1e-6, "BT-CCQ numerical stability constant")
+flags.DEFINE_float(
+    "btccq_calib_ratio", 0.1,
+    "Fraction of offline dataset to hold out for q_hat calibration"
+)
+
 config_flags.DEFINE_config_file(
     "config",
     None,
     "File path to the training hyperparameter configuration.",
     lock_config=False,
 )
+
+
+def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
+    """
+    Compute q_hat from a held-out calibration split of the offline dataset.
+
+    e_i   = max(0, z_off - Q_off(s,a))
+    z_off = r + gamma * masks * V_off(s')
+    V_off = min_j Q_off^j(s', pi_off(s'))
+    q_hat = quantile(e_i, 1-alpha)
+
+    Uses the agent's current (frozen offline) params for all forward passes.
+    No gradients are computed.
+    """
+    n = dataset["observations"].shape[0]
+    rng = jax.random.PRNGKey(0)
+
+    # Random calibration split (held-out from the rest of offline training)
+    n_calib = int(n * calib_ratio)
+    idx = np.random.permutation(n)[:n_calib]
+    calib = {k: v[idx] for k, v in dataset.items()}
+
+    offline_params = agent.state.params   # frozen at this point (before online updates)
+    apply_fn       = agent.state.apply_fn
+
+    residuals = []
+    for start in range(0, n_calib, batch_size):
+        end  = min(start + batch_size, n_calib)
+        obs      = calib["observations"][start:end]
+        actions  = calib["actions"][start:end]
+        rewards  = calib["rewards"][start:end]
+        next_obs = calib["next_observations"][start:end]
+        masks    = calib["masks"][start:end]
+
+        rng, k1, k2, k3 = jax.random.split(rng, 4)
+
+        # Q_off(s, a)  →  (ensemble_size, batch)
+        q_off_sa = apply_fn(
+            {"params": offline_params},
+            obs, actions,
+            name="critic",
+            rngs={"dropout": k1},
+            train=False,
+        ).min(axis=0)   # (batch,)
+
+        # pi_off(s') — use mode (deterministic)
+        a_next_off = apply_fn(
+            {"params": offline_params},
+            next_obs,
+            name="actor",
+            rngs={"dropout": k2},
+            train=False,
+        ).mode()
+
+        # Q_off(s', pi_off(s'))  →  (ensemble_size, batch)
+        v_off_next = apply_fn(
+            {"params": offline_params},
+            next_obs, a_next_off,
+            name="critic",
+            rngs={"dropout": k3},
+            train=False,
+        ).min(axis=0)   # (batch,)
+
+        z_off  = rewards + gamma * masks * v_off_next
+        e_down = np.maximum(0.0, np.asarray(z_off) - np.asarray(q_off_sa))
+        residuals.append(e_down.reshape(-1))
+
+    residuals = np.concatenate(residuals)
+    q_hat     = float(np.quantile(residuals, 1.0 - alpha))
+
+    stats = {
+        "btccq/q_hat":              q_hat,
+        "btccq/calib_e_mean":       float(residuals.mean()),
+        "btccq/calib_e_std":        float(residuals.std()),
+        "btccq/calib_e_p50":        float(np.quantile(residuals, 0.50)),
+        "btccq/calib_e_p90":        float(np.quantile(residuals, 0.90)),
+        "btccq/calib_zero_frac":    float((residuals == 0).mean()),
+        "btccq/calib_n":            int(residuals.size),
+    }
+    return q_hat, stats
 
 
 def main(_):
@@ -191,13 +281,14 @@ def main(_):
     """
     replay buffer
     """
-    replay_buffer_type = ReplayBufferMC if FLAGS.agent == "calql" else ReplayBuffer
+    _needs_mc = FLAGS.agent in ("calql", "btccq")
+    replay_buffer_type = ReplayBufferMC if _needs_mc else ReplayBuffer
     replay_buffer = replay_buffer_type(
         finetune_env.observation_space,
         finetune_env.action_space,
         capacity=FLAGS.replay_buffer_capacity,
         seed=FLAGS.seed,
-        discount=FLAGS.config.agent_kwargs.discount if FLAGS.agent == "calql" else None,
+        discount=FLAGS.config.agent_kwargs.discount if _needs_mc else None,
     )
 
     """
@@ -217,6 +308,33 @@ def main(_):
     if FLAGS.resume_path != "":
         assert os.path.exists(FLAGS.resume_path), "resume path does not exist"
         agent = checkpoints.restore_checkpoint(FLAGS.resume_path, target=agent)
+
+    """
+    BT-CCQ: calibrate q_hat and wrap agent (only when agent == btccq)
+    """
+    if FLAGS.agent == "btccq":
+        logging.info("BT-CCQ: running offline calibration...")
+        # snapshot offline params before any online updates
+        offline_params = jax.device_get(agent.state.params)
+
+        q_hat, calib_stats = calibrate_qhat(
+            agent=agent,
+            dataset=dataset,
+            gamma=FLAGS.config.agent_kwargs.discount,
+            alpha=FLAGS.btccq_alpha,
+            calib_ratio=FLAGS.btccq_calib_ratio,
+        )
+        logging.info("BT-CCQ calibration: %s", calib_stats)
+        wandb_logger.log({"btccq_calibration": calib_stats}, step=0)
+
+        agent = BTCCQAgent.create_from_calql(
+            calql_agent=agent,
+            offline_params=offline_params,
+            q_hat=q_hat,
+            w_out=FLAGS.btccq_w_out,
+            eps=FLAGS.btccq_eps,
+        )
+        logging.info("BT-CCQ: agent ready, q_hat=%.4f", q_hat)
 
     """
     eval function
@@ -284,8 +402,8 @@ def main(_):
                     transition = {k: v[j] for k, v in dataset_items}
                     replay_buffer.insert(transition)
 
-            # option for CQL and CalQL to change the online alpha, and whether to use CQL regularizer
-            if FLAGS.agent in ("cql", "calql"):
+            # option for CQL / CalQL / BT-CCQ to change the online alpha and CQL regularizer
+            if FLAGS.agent in ("cql", "calql", "btccq"):
                 online_agent_configs = {
                     "cql_alpha": FLAGS.config.agent_kwargs.get(
                         "online_cql_alpha", None

@@ -2,8 +2,12 @@ from typing import Optional
 
 import d4rl
 import gym
-import mj_envs
 import numpy as np
+
+try:
+    import mj_envs  # only needed for adroit environments
+except ImportError:
+    pass
 from absl import flags
 
 from wsrl.envs.wrappers import (
