@@ -90,12 +90,13 @@ flags.DEFINE_string("group", None, "Wandb group of the experiment")
 flags.DEFINE_bool("debug", False, "If true, no logging to wandb")
 
 # BT-CCQ flags (ignored when agent != btccq)
-flags.DEFINE_float("btccq_alpha",  0.1,  "BT-CCQ miscoverage level for q_hat quantile")
-flags.DEFINE_float("btccq_w_out",  0.2,  "BT-CCQ minimum gate weight for OOD transitions")
-flags.DEFINE_float("btccq_eps",    1e-6, "BT-CCQ numerical stability constant")
+flags.DEFINE_float("btccq_alpha", 0.1, "BT-CCQ miscoverage level for q_hat quantile")
+flags.DEFINE_float("btccq_w_out", 0.2, "BT-CCQ minimum gate weight for OOD transitions")
+flags.DEFINE_float("btccq_eps", 1e-6, "BT-CCQ numerical stability constant")
 flags.DEFINE_float(
-    "btccq_calib_ratio", 0.1,
-    "Fraction of offline dataset to hold out for q_hat calibration"
+    "btccq_calib_ratio",
+    0.1,
+    "Fraction of offline dataset to hold out for q_hat calibration",
 )
 
 config_flags.DEFINE_config_file(
@@ -126,28 +127,31 @@ def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
     idx = np.random.permutation(n)[:n_calib]
     calib = {k: v[idx] for k, v in dataset.items()}
 
-    offline_params = agent.state.params   # frozen at this point (before online updates)
-    apply_fn       = agent.state.apply_fn
+    offline_params = agent.state.params  # frozen at this point (before online updates)
+    apply_fn = agent.state.apply_fn
 
     residuals = []
     for start in range(0, n_calib, batch_size):
-        end  = min(start + batch_size, n_calib)
-        obs      = calib["observations"][start:end]
-        actions  = calib["actions"][start:end]
-        rewards  = calib["rewards"][start:end]
+        end = min(start + batch_size, n_calib)
+        obs = calib["observations"][start:end]
+        actions = calib["actions"][start:end]
+        rewards = calib["rewards"][start:end]
         next_obs = calib["next_observations"][start:end]
-        masks    = calib["masks"][start:end]
+        masks = calib["masks"][start:end]
 
         rng, k1, k2, k3 = jax.random.split(rng, 4)
 
         # Q_off(s, a)  →  (ensemble_size, batch)
         q_off_sa = apply_fn(
             {"params": offline_params},
-            obs, actions,
+            obs,
+            actions,
             name="critic",
             rngs={"dropout": k1},
             train=False,
-        ).min(axis=0)   # (batch,)
+        ).min(
+            axis=0
+        )  # (batch,)
 
         # pi_off(s') — use mode (deterministic)
         a_next_off = apply_fn(
@@ -161,27 +165,30 @@ def calibrate_qhat(agent, dataset, gamma, alpha, calib_ratio, batch_size=4096):
         # Q_off(s', pi_off(s'))  →  (ensemble_size, batch)
         v_off_next = apply_fn(
             {"params": offline_params},
-            next_obs, a_next_off,
+            next_obs,
+            a_next_off,
             name="critic",
             rngs={"dropout": k3},
             train=False,
-        ).min(axis=0)   # (batch,)
+        ).min(
+            axis=0
+        )  # (batch,)
 
-        z_off  = rewards + gamma * masks * v_off_next
+        z_off = rewards + gamma * masks * v_off_next
         e_down = np.maximum(0.0, np.asarray(z_off) - np.asarray(q_off_sa))
         residuals.append(e_down.reshape(-1))
 
     residuals = np.concatenate(residuals)
-    q_hat     = float(np.quantile(residuals, 1.0 - alpha))
+    q_hat = float(np.quantile(residuals, 1.0 - alpha))
 
     stats = {
-        "btccq/q_hat":              q_hat,
-        "btccq/calib_e_mean":       float(residuals.mean()),
-        "btccq/calib_e_std":        float(residuals.std()),
-        "btccq/calib_e_p50":        float(np.quantile(residuals, 0.50)),
-        "btccq/calib_e_p90":        float(np.quantile(residuals, 0.90)),
-        "btccq/calib_zero_frac":    float((residuals == 0).mean()),
-        "btccq/calib_n":            int(residuals.size),
+        "btccq/q_hat": q_hat,
+        "btccq/calib_e_mean": float(residuals.mean()),
+        "btccq/calib_e_std": float(residuals.std()),
+        "btccq/calib_e_p50": float(np.quantile(residuals, 0.50)),
+        "btccq/calib_e_p90": float(np.quantile(residuals, 0.90)),
+        "btccq/calib_zero_frac": float((residuals == 0).mean()),
+        "btccq/calib_n": int(residuals.size),
     }
     return q_hat, stats
 

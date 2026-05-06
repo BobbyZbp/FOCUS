@@ -121,8 +121,7 @@ class BTCCQAgent(CalQLAgent):
         v_off_next = q_next_off.min(axis=0)  # (batch_size,)
 
         z_off = (
-            batch["rewards"]
-            + self.config["discount"] * batch["masks"] * v_off_next
+            batch["rewards"] + self.config["discount"] * batch["masks"] * v_off_next
         )  # (batch_size,)
 
         # ------------------------------------------------------------------
@@ -130,11 +129,11 @@ class BTCCQAgent(CalQLAgent):
         # ------------------------------------------------------------------
         q_hat = self.config["btccq_q_hat"]
         w_out = self.config.get("btccq_w_out", 0.2)
-        eps   = self.config.get("btccq_eps",   1e-6)
+        eps = self.config.get("btccq_eps", 1e-6)
 
-        delta      = jnp.maximum(0.0, z_off - y_live)           # (batch_size,)
-        soft_w     = jnp.clip(q_hat / (delta + eps), w_out, 1.0)
-        gate       = jnp.where(delta > q_hat, soft_w, 1.0)      # (batch_size,)
+        delta = jnp.maximum(0.0, z_off - y_live)  # (batch_size,)
+        soft_w = jnp.clip(q_hat / (delta + eps), w_out, 1.0)
+        gate = jnp.where(delta > q_hat, soft_w, 1.0)  # (batch_size,)
 
         # ------------------------------------------------------------------
         # 4. Predicted Q values
@@ -154,24 +153,24 @@ class BTCCQAgent(CalQLAgent):
         # ------------------------------------------------------------------
         target_qs = y_live[None].repeat(self.config["critic_ensemble_size"], axis=0)
         # gate broadcast: (1, batch_size) → (ensemble_size, batch_size)
-        td_sq     = (predicted_qs - target_qs) ** 2              # (E, N)
+        td_sq = (predicted_qs - target_qs) ** 2  # (E, N)
         critic_loss = jnp.mean(gate[None] * td_sq)
 
         # ------------------------------------------------------------------
         # 6. Info dict
         # ------------------------------------------------------------------
         info = {
-            "critic_loss":       critic_loss,
-            "predicted_qs":      jnp.mean(predicted_qs),
-            "target_qs":         jnp.mean(y_live),
-            "btccq/q_hat":       q_hat,
-            "btccq/z_off_mean":  jnp.mean(z_off),
+            "critic_loss": critic_loss,
+            "predicted_qs": jnp.mean(predicted_qs),
+            "target_qs": jnp.mean(y_live),
+            "btccq/q_hat": q_hat,
+            "btccq/z_off_mean": jnp.mean(z_off),
             "btccq/y_live_mean": jnp.mean(y_live),
-            "btccq/delta_mean":  jnp.mean(delta),
-            "btccq/delta_max":   jnp.max(delta),
-            "btccq/gate_mean":   jnp.mean(gate),
-            "btccq/gate_min":    jnp.min(gate),
-            "btccq/gate_frac":   jnp.mean(delta > q_hat),
+            "btccq/delta_mean": jnp.mean(delta),
+            "btccq/delta_max": jnp.max(delta),
+            "btccq/gate_mean": jnp.mean(gate),
+            "btccq/gate_min": jnp.min(gate),
+            "btccq/gate_frac": jnp.mean(delta > q_hat),
         }
 
         return critic_loss, info
@@ -199,7 +198,7 @@ class BTCCQAgent(CalQLAgent):
         new_config = dict(calql_agent.config)
         new_config["btccq_q_hat"] = float(q_hat)
         new_config["btccq_w_out"] = float(w_out)
-        new_config["btccq_eps"]   = float(eps)
+        new_config["btccq_eps"] = float(eps)
 
         return cls(
             state=calql_agent.state,
