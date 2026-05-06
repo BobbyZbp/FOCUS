@@ -25,14 +25,14 @@ echo "Checkpoint: ${RESUME_PATH}"
 echo "Env:        ${ENV_NAME}"
 echo ""
 
-python3 finetune.py \
+python finetune.py \
   --agent btccq \
   --config experiments/configs/train_config.py:antmaze_btccq \
   --env ${ENV_NAME} \
   --reward_scale 10.0 \
   --reward_bias -5.0 \
   --num_offline_steps 1_000_000 \
-  --num_online_steps 1000 \
+  --num_online_steps 3000 \
   --resume_path ${RESUME_PATH} \
   --warmup_steps 100 \
   --utd 1 \
@@ -41,9 +41,9 @@ python3 finetune.py \
   --btccq_w_out 0.2 \
   --btccq_calib_ratio 0.05 \
   --save_dir /workspace/checkpoints/smoke_btccq_online \
-  --eval_interval 1000 \
-  --log_interval 100 \
-  --save_interval 1000 \
+  --eval_interval 3000 \
+  --log_interval 500 \
+  --save_interval 3000 \
   --seed 0 \
   --debug
 
