@@ -5,12 +5,12 @@ export PYOPENGL_PLATFORM=osmesa
 export MUJOCO_GL=osmesa
 
 python finetune.py \
-  --agent sac \
-  --config experiments/configs/train_config.py:antmaze_wsrl \
+  --agent calql \
+  --config experiments/configs/train_config.py:antmaze_cql \
   --env antmaze-large-diverse-v2 \
   --reward_scale 10.0 \
   --reward_bias -5.0 \
-  --num_offline_steps 1_000_000 \
+  --num_offline_steps 0 \
   --num_online_steps 200_000 \
   --utd 4 \
   --batch_size 1024 \
