@@ -265,7 +265,10 @@ def main(_):
         FLAGS.config.agent_kwargs = add_redq_config(FLAGS.config.agent_kwargs)
 
     min_steps_to_update = FLAGS.batch_size * (1 - FLAGS.offline_data_ratio)
-    if FLAGS.agent == "calql":
+    if FLAGS.agent in ("calql", "btccq"):
+        # Need at least one full episode in the online replay buffer before
+        # we sample a minibatch from it (avoids replay_buffer.sample() raising
+        # ValueError when the buffer is smaller than batch_size).
         min_steps_to_update = max(
             min_steps_to_update, gym.make(FLAGS.env)._max_episode_steps
         )
@@ -327,8 +330,9 @@ def main(_):
             clip_action=FLAGS.clip_action,
         )
     else:
-        if FLAGS.agent == "calql":
-            # need dataset with mc return
+        if FLAGS.agent in ("calql", "btccq"):
+            # need dataset with mc return (BTCCQAgent inherits CalQL CQL loss
+            # which uses calql_bound_random_actions / mc_returns)
             dataset = get_d4rl_dataset_with_mc_calculation(
                 FLAGS.env,
                 reward_scale=FLAGS.reward_scale,
@@ -545,32 +549,39 @@ def main(_):
                     pass
                 else:
                     # do online updates, gather batch
+                    batch = None  # sentinel: skip update if not enough data
                     if FLAGS.online_sampling_method == "mixed":
-                        # batch from a mixing ratio of offline and online data
                         batch_size_offline = int(
                             FLAGS.batch_size * FLAGS.offline_data_ratio
                         )
                         batch_size_online = FLAGS.batch_size - batch_size_offline
-                        online_batch = replay_buffer.sample(batch_size_online)
-                        offline_batch = subsample_batch(dataset, batch_size_offline)
-                        # update with the combined batch
-                        batch = concatenate_batches([online_batch, offline_batch])
+                        # Defensive: skip update if online buffer doesn't yet
+                        # have enough samples (avoids ValueError in
+                        # replay_buffer.sample when buffer < batch).
+                        if (
+                            batch_size_online == 0
+                            or len(replay_buffer) >= batch_size_online
+                        ):
+                            online_batch = replay_buffer.sample(batch_size_online)
+                            offline_batch = subsample_batch(dataset, batch_size_offline)
+                            batch = concatenate_batches([online_batch, offline_batch])
                     elif FLAGS.online_sampling_method == "append":
-                        # batch from online replay buffer, with is initialized with offline data
-                        batch = replay_buffer.sample(FLAGS.batch_size)
+                        if len(replay_buffer) >= FLAGS.batch_size:
+                            batch = replay_buffer.sample(FLAGS.batch_size)
                     else:
                         raise RuntimeError("Incorrect online sampling method")
 
-                    # update
-                    if FLAGS.utd > 1:
-                        agent, update_info = agent.update_high_utd(
-                            batch,
-                            utd_ratio=FLAGS.utd,
-                        )
-                    else:
-                        agent, update_info = agent.update(
-                            batch,
-                        )
+                    # update (only if we got a batch)
+                    if batch is not None:
+                        if FLAGS.utd > 1:
+                            agent, update_info = agent.update_high_utd(
+                                batch,
+                                utd_ratio=FLAGS.utd,
+                            )
+                        else:
+                            agent, update_info = agent.update(
+                                batch,
+                            )
 
         """
         Advance Step
