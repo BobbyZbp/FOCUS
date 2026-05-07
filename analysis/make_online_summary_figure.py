@@ -20,20 +20,26 @@ label_map = {
 }
 methods = ["WSRL", "FOCUS-Low-5", "FOCUS-High-5"]
 
-# pretty labels
+# pretty labels (and consistent colors across panels)
 method_label = {
     "WSRL": "WSRL",
     "FOCUS-Low-5": "FOCUS-Low-5",
     "FOCUS-High-5": "FOCUS-High-5",
 }
+method_color = {
+    "WSRL": "#1f77b4",
+    "FOCUS-Low-5": "#ff7f0e",
+    "FOCUS-High-5": "#2ca02c",
+}
 
 df = df.copy()
 df["ckpt_label"] = df["step"].map(label_map)
 
-fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.2), constrained_layout=True)
+# Larger figure + room at top for legend so it doesn't overlap titles
+fig, axes = plt.subplots(1, 2, figsize=(10.0, 4.2))
 
 x = np.arange(len(order))
-width = 0.23
+width = 0.25
 
 # -------------------------
 # left: AUC after 20K
@@ -46,6 +52,9 @@ for i, m in enumerate(methods):
         sub["auc_after_20k"].values,
         width=width,
         label=method_label[m],
+        color=method_color[m],
+        edgecolor="white",
+        linewidth=0.6,
     )
 
 ax.set_xticks(x)
@@ -53,7 +62,9 @@ ax.set_xticklabels([label_map[s] for s in order])
 ax.set_xlabel("Checkpoint")
 ax.set_ylabel("AUC after 20K")
 ax.set_ylim(0.75, 1.00)
-ax.set_title("(a) Post-burn-in online return", fontsize=11)
+ax.set_title("(a) Post-burn-in online return", fontsize=11, pad=8)
+ax.grid(axis="y", linestyle=":", alpha=0.4)
+ax.set_axisbelow(True)
 
 # -------------------------
 # right: fraction >= 0.9
@@ -66,16 +77,21 @@ for i, m in enumerate(methods):
         sub["frac_ge_0p9_after_20k"].values,
         width=width,
         label=method_label[m],
+        color=method_color[m],
+        edgecolor="white",
+        linewidth=0.6,
     )
 
 ax.set_xticks(x)
 ax.set_xticklabels([label_map[s] for s in order])
 ax.set_xlabel("Checkpoint")
-ax.set_ylabel("Frac. evals $\\geq 0.9$ after 20K")
-ax.set_ylim(0.0, 1.0)
-ax.set_title("(b) High-success occupancy", fontsize=11)
+ax.set_ylabel(r"Frac. evals $\geq 0.9$ after 20K")
+ax.set_ylim(0.0, 1.05)
+ax.set_title("(b) High-success occupancy", fontsize=11, pad=8)
+ax.grid(axis="y", linestyle=":", alpha=0.4)
+ax.set_axisbelow(True)
 
-# single legend for whole figure
+# Single legend ABOVE both panels — well clear of titles.
 handles, labels = axes[0].get_legend_handles_labels()
 fig.legend(
     handles,
@@ -83,8 +99,14 @@ fig.legend(
     loc="upper center",
     ncol=3,
     frameon=False,
-    bbox_to_anchor=(0.5, 1.05),
+    fontsize=10,
+    bbox_to_anchor=(0.5, 1.00),
 )
+
+# Manual top margin so the figure-level legend has its own band
+# (don't use constrained_layout — it conflicts with fig.legend()
+#  positioned outside the axes).
+plt.subplots_adjust(left=0.08, right=0.98, top=0.84, bottom=0.13, wspace=0.28)
 
 Path("figures").mkdir(parents=True, exist_ok=True)
 fig.savefig(OUT_PDF, bbox_inches="tight")
