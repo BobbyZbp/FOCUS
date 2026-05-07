@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 from absl import flags
 
+from wsrl.cfs.cfs_head_selection import sample_redq_target_heads
 from wsrl.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from wsrl.common.optimizers import make_optimizer
 from wsrl.common.typing import Batch, Data, Params, PRNGKey
@@ -235,11 +236,11 @@ class SACAgent(flax.struct.PyTreeNode):
         # Subsample if requested
         if self.config["critic_subsample_size"] is not None:
             rng, subsample_key = jax.random.split(rng)
-            subsample_idcs = jax.random.randint(
-                subsample_key,
-                (self.config["critic_subsample_size"],),
-                0,
-                self.config["critic_ensemble_size"],
+            subsample_idcs = sample_redq_target_heads(
+                key=subsample_key,
+                critic_subsample_size=self.config["critic_subsample_size"],
+                critic_ensemble_size=self.config["critic_ensemble_size"],
+                config=self.config,
             )
             target_next_qs = target_next_qs[subsample_idcs]
 
@@ -452,7 +453,9 @@ class SACAgent(flax.struct.PyTreeNode):
 
     def update_config(self, new_config):
         """update the frozen self.config"""
-        object.__setattr__(self, "config", self.config.copy(new_config))
+        updated_config = dict(self.config)
+        updated_config.update(dict(new_config))
+        object.__setattr__(self, "config", updated_config)
 
     @classmethod
     def _create_common(

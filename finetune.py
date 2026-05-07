@@ -12,6 +12,7 @@ from ml_collections import config_flags
 from experiments.configs.ensemble_config import add_redq_config
 from wsrl.agents import agents
 from wsrl.agents.btccq import BTCCQAgent
+from wsrl.cfs.cfs_calibration import maybe_apply_cfs_calibration
 from wsrl.common.evaluation import evaluate_with_trajectories
 from wsrl.common.wandb import WandBLogger
 from wsrl.data.replay_buffer import ReplayBuffer, ReplayBufferMC
@@ -99,6 +100,43 @@ flags.DEFINE_float(
     "Fraction of offline dataset to hold out for q_hat calibration",
 )
 
+
+# CFS-D flags (ignored unless --use_cfs is set)
+flags.DEFINE_bool(
+    "use_cfs", False, "Use CFS-D target-head selection for REDQ online targets."
+)
+flags.DEFINE_enum(
+    "cfs_mode",
+    "low_eta",
+    ["low_eta", "low_rho", "high_eta", "random_topk"],
+    "CFS head selection mode.",
+)
+flags.DEFINE_integer("cfs_top_k", 5, "Number of selected CFS REDQ heads.")
+flags.DEFINE_integer(
+    "cfs_calib_n", 50_000, "Number of offline samples for CFS calibration."
+)
+flags.DEFINE_integer(
+    "cfs_calib_batch_size", 4096, "Forward-pass batch size for CFS calibration."
+)
+flags.DEFINE_float("cfs_e_weight", 0.1, "Bellman error weight in the CFS rho score.")
+flags.DEFINE_integer(
+    "cfs_dominance_samples",
+    20_000,
+    "Monte-Carlo dominance samples if exact REDQ subset enumeration is too large.",
+)
+flags.DEFINE_float(
+    "cfs_min_cv", 0.05, "Minimum rho CV used by --cfs_require_heterogeneity."
+)
+flags.DEFINE_bool(
+    "cfs_require_heterogeneity",
+    False,
+    "Disable CFS online intervention if rho_cv < cfs_min_cv.",
+)
+flags.DEFINE_string(
+    "cfs_stats_output",
+    "",
+    "Optional CSV path for CFS calibration stats during finetune.",
+)
 config_flags.DEFINE_config_file(
     "config",
     None,
@@ -558,6 +596,34 @@ def main(_):
                     "use_cql_loss": FLAGS.online_use_cql_loss,
                 }
                 agent.update_config(online_agent_configs)
+
+            # CFS-D: at the offline -> online boundary, score the frozen
+            # REDQ heads and optionally restrict online REDQ target-head
+            # sampling to the selected low-footprint / low-influence pool.
+            if FLAGS.use_cfs:
+                logging.info("CFS-D: running transition-time calibration...")
+                critic_subsample_size = FLAGS.config.agent_kwargs.get(
+                    "critic_subsample_size", 2
+                )
+                agent, cfs_info = maybe_apply_cfs_calibration(
+                    agent=agent,
+                    dataset=dataset,
+                    gamma=FLAGS.config.agent_kwargs.discount,
+                    use_cfs=True,
+                    mode=FLAGS.cfs_mode,
+                    top_k=FLAGS.cfs_top_k,
+                    num_samples=FLAGS.cfs_calib_n,
+                    batch_size=FLAGS.cfs_calib_batch_size,
+                    e_weight=FLAGS.cfs_e_weight,
+                    critic_subsample_size=critic_subsample_size,
+                    dominance_samples=FLAGS.cfs_dominance_samples,
+                    min_cv=FLAGS.cfs_min_cv,
+                    require_heterogeneity=FLAGS.cfs_require_heterogeneity,
+                    output_path=FLAGS.cfs_stats_output,
+                    seed=FLAGS.seed,
+                )
+                logging.info("CFS-D calibration: %s", cfs_info)
+                wandb_logger.log({"cfs_calibration": cfs_info}, step=step)
 
             # BT-CCQ: at the offline -> online boundary, freeze the
             # current SAC params as the offline reference, calibrate
